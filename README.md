@@ -1,4 +1,4 @@
-# 🩺 Skin Care Connect
+#  Skin Care Connect
 
 AI-assisted skin lesion triage that connects users to dermatologists.
 Originally built as a Final Year Project (CIT 4299, Dedan Kimathi University
@@ -142,22 +142,6 @@ to one-click:
 
 ---
 
-## Pushing this to GitHub
-
-```bash
-cd skin-care-connect
-git init
-git add .
-git commit -m "Initial commit: Skin Care Connect"
-git branch -M main
-git remote add origin https://github.com/<your-username>/skin-care-connect.git
-git push -u origin main
-```
-
-`data/app.db` and `.streamlit/secrets.toml` are already gitignored so no
-real user data or secrets end up in the public repo.
-
----
 
 ## Tech stack
 
