@@ -1,0 +1,7 @@
+# Extra dependencies needed only to retrain/evaluate the model.
+# The deployed Streamlit app does NOT need these — see the root requirements.txt.
+tensorflow==2.16.1
+scikit-learn==1.5.1
+matplotlib==3.9.1
+seaborn==0.13.2
+h5py==3.11.0
