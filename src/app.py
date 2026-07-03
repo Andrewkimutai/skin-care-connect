@@ -196,7 +196,11 @@ def analyze_page():
         )
         if uploaded_file is not None:
             image = Image.open(uploaded_file)
-            st.image(image, caption="Uploaded image", use_container_width=True)
+            try:
+                st.image(image, caption="Uploaded image", use_container_width=True)
+            except TypeError:
+                # Older Streamlit (<1.40) doesn't have use_container_width on st.image
+                st.image(image, caption="Uploaded image", use_column_width=True)
         theme.card_end()
 
     if uploaded_file is not None:
