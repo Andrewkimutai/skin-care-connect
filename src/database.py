@@ -1,224 +1,247 @@
 """
 database.py
-SQLite data access layer for Skin Care Connect.
+Data access layer for Skin Care Connect, backed by SQLAlchemy so the exact
+same code runs against SQLite (local dev, zero setup) or PostgreSQL
+(production — e.g. Render Postgres).
 
-The DB path is resolved relative to this file (not the current working
-directory) so the app behaves the same whether it's launched from the repo
-root, from src/, or from a Render container. It can be overridden with the
-DATABASE_PATH environment variable.
+Which one you get is controlled entirely by the DATABASE_URL environment
+variable:
+
+    - Not set               -> SQLite file at ./data/app.db
+    - postgres://...        -> normalized to postgresql+psycopg2:// and used
+    - postgresql://...      -> used as-is (driver added if missing)
+
+All function signatures and return shapes are unchanged from the original
+sqlite3 version, so app.py did not need any changes for this migration.
 """
 import os
 import json
-import sqlite3
 from pathlib import Path
-from contextlib import contextmanager
+
+from sqlalchemy import (
+    create_engine, text, MetaData, Table, Column, Integer, String, Text,
+    Float, Boolean, DateTime, ForeignKey, func,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = os.environ.get("DATABASE_PATH", str(BASE_DIR / "data" / "app.db"))
-
-# Make sure the folder that will hold app.db actually exists (Render's
-# filesystem starts empty on every deploy).
-Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 
-@contextmanager
-def get_connection():
-    """Context-managed connection so we never leak open handles."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA foreign_keys = ON")
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+def _normalize_database_url(url: str) -> str:
+    """Render (and other Heroku-style platforms) hand out URLs prefixed with
+    'postgres://', but SQLAlchemy 2.x / psycopg2 expect 'postgresql://'."""
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    if url.startswith("postgresql://") and "+psycopg2" not in url:
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
+_raw_url = os.environ.get("DATABASE_URL")
+if _raw_url:
+    DATABASE_URL = _normalize_database_url(_raw_url)
+    IS_POSTGRES = True
+else:
+    sqlite_path = os.environ.get("DATABASE_PATH", str(BASE_DIR / "data" / "app.db"))
+    Path(sqlite_path).parent.mkdir(parents=True, exist_ok=True)
+    DATABASE_URL = f"sqlite:///{sqlite_path}"
+    IS_POSTGRES = False
+
+# pool_pre_ping avoids "server closed the connection unexpectedly" errors
+# from Postgres providers (including Render) that silently drop idle
+# connections. pool_recycle proactively refreshes connections before that
+# can happen.
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=280,
+    connect_args={"check_same_thread": False} if not IS_POSTGRES else {},
+)
+
+metadata = MetaData()
+
+users = Table(
+    "users", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("username", String(150), unique=True, nullable=False),
+    Column("password_hash", String(255), nullable=False),
+    Column("password_salt", String(255), nullable=False, server_default=""),
+    Column("email", String(255), unique=True),
+    Column("role", String(30), server_default="user"),
+    Column("created_at", DateTime(timezone=True), server_default=func.now()),
+)
+
+predictions = Table(
+    "predictions", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, ForeignKey("users.id")),
+    Column("image_filename", String(500), nullable=False),
+    Column("predicted_class", String(100), nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("all_probabilities", Text, nullable=False),
+    Column("recommendation", Text, nullable=False),
+    Column("needs_appointment", Boolean, nullable=False),
+    Column("timestamp", DateTime(timezone=True), server_default=func.now()),
+)
+
+appointments = Table(
+    "appointments", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, ForeignKey("users.id")),
+    Column("prediction_id", Integer, ForeignKey("predictions.id")),
+    Column("scheduled_date", DateTime(timezone=True), nullable=False),
+    Column("status", String(30), server_default="pending"),
+    Column("notes", Text),
+    Column("notes_from_dermatologist", Text, server_default=""),
+    Column("created_at", DateTime(timezone=True), server_default=func.now()),
+)
 
 
 def init_db():
-    with get_connection() as conn:
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                password_salt TEXT NOT NULL DEFAULT '',
-                email TEXT UNIQUE,
-                role TEXT DEFAULT 'user',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS predictions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                image_filename TEXT NOT NULL,
-                predicted_class TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                all_probabilities TEXT NOT NULL,
-                recommendation TEXT NOT NULL,
-                needs_appointment BOOLEAN NOT NULL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS appointments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                prediction_id INTEGER,
-                scheduled_date DATETIME NOT NULL,
-                status TEXT DEFAULT 'pending',
-                notes TEXT,
-                notes_from_dermatologist TEXT DEFAULT '',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id),
-                FOREIGN KEY (prediction_id) REFERENCES predictions (id)
-            )
-        ''')
-
-        # Lightweight migration: add password_salt if an old DB is present.
-        cursor.execute("PRAGMA table_info(users)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "password_salt" not in columns:
-            cursor.execute("ALTER TABLE users ADD COLUMN password_salt TEXT NOT NULL DEFAULT ''")
+    metadata.create_all(engine)
 
 
 def get_user_by_username(username):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            'SELECT id, username, password_hash, password_salt, role FROM users WHERE username = ?',
-            (username,)
-        )
-        return cursor.fetchone()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id, username, password_hash, password_salt, role "
+                 "FROM users WHERE username = :username"),
+            {"username": username},
+        ).fetchone()
+        return tuple(row) if row else None
 
 
 def create_user(username, password_hash, password_salt, email=None, role='user'):
-    with get_connection() as conn:
-        cursor = conn.cursor()
+    with engine.begin() as conn:
         try:
-            cursor.execute(
-                'INSERT INTO users (username, password_hash, password_salt, email, role) '
-                'VALUES (?, ?, ?, ?, ?)',
-                (username, password_hash, password_salt, email, role)
+            conn.execute(
+                users.insert().values(
+                    username=username, password_hash=password_hash,
+                    password_salt=password_salt, email=email, role=role,
+                )
             )
             return True
-        except sqlite3.IntegrityError:
+        except Exception:
             return False
 
 
 def save_prediction_result(user_id, image_filename, result):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO predictions (user_id, image_filename, predicted_class, confidence,
-                                      all_probabilities, recommendation, needs_appointment)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            user_id, image_filename, result['predicted_class'], result['confidence'],
-            json.dumps(result['all_predictions']), result['recommendation'], result['needs_appointment']
-        ))
-        return cursor.lastrowid
+    with engine.begin() as conn:
+        inserted = conn.execute(
+            predictions.insert().values(
+                user_id=user_id,
+                image_filename=image_filename,
+                predicted_class=result['predicted_class'],
+                confidence=result['confidence'],
+                all_probabilities=json.dumps(result['all_predictions']),
+                recommendation=result['recommendation'],
+                needs_appointment=result['needs_appointment'],
+            ).returning(predictions.c.id)
+        )
+        return inserted.scalar_one()
 
 
 def book_appointment(user_id, prediction_id, scheduled_datetime, notes=""):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO appointments (user_id, prediction_id, scheduled_date, notes, status)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, prediction_id, scheduled_datetime, notes, 'pending'))
+    with engine.begin() as conn:
+        conn.execute(
+            appointments.insert().values(
+                user_id=user_id, prediction_id=prediction_id,
+                scheduled_date=scheduled_datetime, notes=notes, status='pending',
+            )
+        )
 
 
 def get_user_appointments(user_id):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT a.id, a.scheduled_date, a.status, a.notes, a.notes_from_dermatologist,
-                   p.predicted_class, p.confidence, p.timestamp as prediction_time
-            FROM appointments a
-            LEFT JOIN predictions p ON a.prediction_id = p.id
-            WHERE a.user_id = ?
-            ORDER BY a.scheduled_date ASC
-        ''', (user_id,))
-        return cursor.fetchall()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT a.id, a.scheduled_date, a.status, a.notes, a.notes_from_dermatologist,
+                       p.predicted_class, p.confidence, p.timestamp as prediction_time
+                FROM appointments a
+                LEFT JOIN predictions p ON a.prediction_id = p.id
+                WHERE a.user_id = :user_id
+                ORDER BY a.scheduled_date ASC
+            """),
+            {"user_id": user_id},
+        ).fetchall()
+        return [tuple(r) for r in rows]
 
 
 def get_all_appointments():
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT a.id, u.username as patient_username, a.scheduled_date, a.status,
-                   a.notes, a.notes_from_dermatologist, p.predicted_class, p.confidence,
-                   p.timestamp as prediction_time
-            FROM appointments a
-            JOIN users u ON a.user_id = u.id
-            LEFT JOIN predictions p ON a.prediction_id = p.id
-            ORDER BY a.scheduled_date ASC
-        ''')
-        return cursor.fetchall()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT a.id, u.username as patient_username, a.scheduled_date, a.status,
+                       a.notes, a.notes_from_dermatologist, p.predicted_class, p.confidence,
+                       p.timestamp as prediction_time
+                FROM appointments a
+                JOIN users u ON a.user_id = u.id
+                LEFT JOIN predictions p ON a.prediction_id = p.id
+                ORDER BY a.scheduled_date ASC
+            """)
+        ).fetchall()
+        return [tuple(r) for r in rows]
 
 
 def update_appointment_status_and_notes(appointment_id, new_status, dermatologist_notes):
     if new_status not in ('pending', 'confirmed', 'cancelled'):
         return False
-    with get_connection() as conn:
-        cursor = conn.cursor()
+    with engine.begin() as conn:
         try:
-            cursor.execute(
-                'UPDATE appointments SET status = ?, notes_from_dermatologist = ? WHERE id = ?',
-                (new_status, dermatologist_notes, appointment_id)
+            conn.execute(
+                appointments.update()
+                .where(appointments.c.id == appointment_id)
+                .values(status=new_status, notes_from_dermatologist=dermatologist_notes)
             )
             return True
-        except sqlite3.Error:
+        except Exception:
             return False
 
 
 def get_all_users():
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('SELECT id, username, email, role, created_at FROM users ORDER BY created_at DESC')
-        return cursor.fetchall()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT id, username, email, role, created_at FROM users ORDER BY created_at DESC")
+        ).fetchall()
+        return [tuple(r) for r in rows]
 
 
 def update_user_role(user_id, new_role):
     if new_role not in ('user', 'dermatologist', 'admin'):
         return False
-    with get_connection() as conn:
-        cursor = conn.cursor()
+    with engine.begin() as conn:
         try:
-            cursor.execute('UPDATE users SET role = ? WHERE id = ?', (new_role, user_id))
+            conn.execute(
+                users.update().where(users.c.id == user_id).values(role=new_role)
+            )
             return True
-        except sqlite3.Error:
+        except Exception:
             return False
 
 
 def delete_user(user_id):
-    with get_connection() as conn:
-        cursor = conn.cursor()
+    with engine.begin() as conn:
         try:
-            cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
+            conn.execute(users.delete().where(users.c.id == user_id))
             return True
-        except sqlite3.Error:
+        except Exception:
             return False
 
 
 def get_user_predictions(user_id):
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, image_filename, predicted_class, confidence, recommendation,
-                   needs_appointment, timestamp
-            FROM predictions
-            WHERE user_id = ?
-            ORDER BY timestamp DESC
-        ''', (user_id,))
-        return cursor.fetchall()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT id, image_filename, predicted_class, confidence, recommendation,
+                       needs_appointment, timestamp
+                FROM predictions
+                WHERE user_id = :user_id
+                ORDER BY timestamp DESC
+            """),
+            {"user_id": user_id},
+        ).fetchall()
+        return [tuple(r) for r in rows]
 
 
 if __name__ == "__main__":
     init_db()
-    print(f"Database initialized at {DB_PATH}")
+    print(f"Database initialized at {DATABASE_URL} (postgres={IS_POSTGRES})")

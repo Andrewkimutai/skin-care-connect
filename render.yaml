@@ -1,3 +1,8 @@
+databases:
+  - name: skin-care-connect-db
+    plan: free
+    postgresMajorVersion: 16
+
 services:
   - type: web
     name: skin-care-connect
@@ -8,6 +13,8 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: DATABASE_PATH
-        value: /opt/render/project/src/data/app.db
+      - key: DATABASE_URL
+        fromDatabase:
+          name: skin-care-connect-db
+          property: connectionString
     healthCheckPath: /

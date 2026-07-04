@@ -120,25 +120,44 @@ and never commit `data/app.db`.
 
 ## Deploying to Render
 
-This repo ships a `render.yaml` (Render "Blueprint") so deployment is close
-to one-click:
+This repo ships a `render.yaml` (Render "Blueprint") that provisions **both**
+the web service and a managed PostgreSQL database automatically:
 
 1. Push this repo to GitHub (see below).
-2. In the Render dashboard: **New → Blueprint**, connect the repo, and
-   Render will read `render.yaml` automatically.
-3. Or configure manually as a **Web Service**:
-   - Build command: `pip install -r requirements.txt`
-   - Start command: `streamlit run src/app.py --server.port $PORT --server.address 0.0.0.0`
-   - Runtime: Python 3.11
-4. **Known limitation:** Render's free tier disk is ephemeral — anything
-   written to SQLite is lost on redeploy or when the instance spins down.
-   That's fine for a demo; for persistence, swap `database.py` to point at
-   a managed Postgres instance (Render offers a free Postgres tier) before
-   relying on this in production.
-5. The model is loaded from `models/skin_disease_model.h5`, which is
+2. In the Render dashboard: **New → Blueprint**, connect the repo. Render
+   reads `render.yaml`, creates a free Postgres database named
+   `skin-care-connect-db`, and wires its connection string into the web
+   service's `DATABASE_URL` environment variable automatically.
+3. Or configure manually:
+   - Create a **PostgreSQL** instance in Render (New → PostgreSQL).
+   - Create a **Web Service** from this repo:
+     - Build command: `pip install -r requirements.txt`
+     - Start command: `streamlit run src/app.py --server.port $PORT --server.address 0.0.0.0`
+     - Runtime: Python 3.11
+   - Add an environment variable `DATABASE_URL` on the web service, set to
+     your Postgres instance's **Internal Database URL** (found on the
+     database's Render dashboard page).
+4. After the first deploy, seed demo accounts by running (in the Render
+   Shell tab, or locally against the same `DATABASE_URL`):
+   ```bash
+   python scripts/seed_demo_data.py
+   ```
+5. **Free Postgres expires 30 days after creation**, with a 14-day grace
+   period to upgrade before Render deletes it. Fine for a demo/portfolio
+   project — just know the clock is running, and upgrade to a paid instance
+   type (or recreate the DB) if you need it to persist longer.
+6. The model is loaded from `models/skin_disease_model.h5`, which is
    committed to the repo (~94MB, under GitHub's 100MB hard limit). Cold
    starts on the free tier will take a bit longer because of that — this is
    expected.
+
+### Local development
+
+By default (no `DATABASE_URL` set) the app uses a local SQLite file at
+`./data/app.db` — no database server needed. To develop against Postgres
+locally instead, set `DATABASE_URL` (see `.env.example`) before running
+`streamlit run src/app.py`. The same `src/database.py` code runs against
+either backend unchanged.
 
 ---
 
@@ -162,7 +181,7 @@ real user data or secrets end up in the public repo.
 ## Tech stack
 
 Streamlit · TensorFlow/Keras (ResNet50 transfer learning) · OpenCV ·
-SQLite · Plotly · Python 3.11
+SQLAlchemy (SQLite locally / PostgreSQL in production) · Plotly · Python 3.11
 
 ## License
 
