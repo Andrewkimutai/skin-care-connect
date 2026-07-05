@@ -7,7 +7,7 @@ classifier trained on the [HAM10000](https://doi.org/10.7910/DVN/DBW86T) dataset
 with role-based accounts (patient / dermatologist / admin), appointment
 booking, and analysis history.
 
-> ⚠️ **This is a research/academic prototype, not a medical device.** See
+>  **This is a research/academic prototype, not a medical device.** See
 > [Model performance & limitations](#model-performance--limitations) before
 > drawing any conclusions from it.
 
@@ -137,11 +137,31 @@ the web service and a managed PostgreSQL database automatically:
    - Add an environment variable `DATABASE_URL` on the web service, set to
      your Postgres instance's **Internal Database URL** (found on the
      database's Render dashboard page).
-4. After the first deploy, seed demo accounts by running (in the Render
-   Shell tab, or locally against the same `DATABASE_URL`):
-   ```bash
-   python scripts/seed_demo_data.py
-   ```
+4. **Getting your first login (no shell access needed):** the app
+   auto-creates a single admin account on its very first startup, from
+   environment variables — this works even on Render's free tier where the
+   interactive Shell tab isn't available.
+   - In the Render dashboard, go to your web service → **Environment**, and
+     add:
+     - `ADMIN_USERNAME` (e.g. `admin`)
+     - `ADMIN_PASSWORD` (choose a real password — required, this is the
+       switch that turns bootstrapping on)
+     - `ADMIN_EMAIL` (optional)
+   - Save, which triggers a redeploy. On that first startup, if the
+     `users` table is empty, the app creates that one admin account and
+     never touches it again (running it a second time, or with the users
+     table non-empty, is a safe no-op).
+   - Log in with those credentials, then use the in-app **Manage Users**
+     page to create your dermatologist and patient demo accounts — no
+     shell, no local `psql`, no script to run.
+   - If you're using the Blueprint flow (`render.yaml`), Render will prompt
+     you for `ADMIN_PASSWORD` when you create the blueprint (it's marked
+     `sync: false` so it's never committed to the repo).
+   - Alternative, if you do have a local Python environment: Render's
+     Postgres **External Database URL** (visible on the database's page in
+     the Render dashboard, even on the free tier) can be used as
+     `DATABASE_URL` to run `python scripts/seed_demo_data.py` from your own
+     machine instead.
 5. **Free Postgres expires 30 days after creation**, with a 14-day grace
    period to upgrade before Render deletes it. Fine for a demo/portfolio
    project — just know the clock is running, and upgrade to a paid instance
@@ -160,6 +180,7 @@ locally instead, set `DATABASE_URL` (see `.env.example`) before running
 either backend unchanged.
 
 ---
+
 
 
 ## Tech stack

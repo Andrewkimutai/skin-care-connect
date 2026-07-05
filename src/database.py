@@ -242,6 +242,41 @@ def get_user_predictions(user_id):
         return [tuple(r) for r in rows]
 
 
+def count_users():
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT COUNT(*) FROM users")).scalar()
+
+
+def bootstrap_admin_from_env():
+    """
+    Creates a single admin account from environment variables, but only if
+    the users table is completely empty. This exists so a fresh deployment
+    (e.g. on a Render free-tier instance with no shell access) still ends up
+    with a way to log in — set ADMIN_USERNAME / ADMIN_PASSWORD / ADMIN_EMAIL
+    as environment variables in the Render dashboard and this runs once on
+    the app's first startup.
+
+    Intentionally does nothing if ADMIN_PASSWORD isn't set, and does nothing
+    once any user already exists — so it can't be used to reset or hijack
+    an existing account.
+    """
+    admin_password = os.environ.get("ADMIN_PASSWORD")
+    if not admin_password:
+        return None
+    if count_users() > 0:
+        return None
+
+    admin_username = os.environ.get("ADMIN_USERNAME", "admin")
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com")
+
+    # Imported here (not at module top) to avoid a circular import, since
+    # auth.py doesn't need anything from database.py.
+    from auth import hash_password
+    password_hash, password_salt = hash_password(admin_password)
+    created = create_user(admin_username, password_hash, password_salt, admin_email, "admin")
+    return admin_username if created else None
+
+
 if __name__ == "__main__":
     init_db()
     print(f"Database initialized at {DATABASE_URL} (postgres={IS_POSTGRES})")

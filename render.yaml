@@ -17,4 +17,10 @@ services:
         fromDatabase:
           name: skin-care-connect-db
           property: connectionString
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: ADMIN_EMAIL
+        value: admin@example.com
     healthCheckPath: /
